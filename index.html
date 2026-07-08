@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>語音錄音摘要工具</title>
+<style>
+  :root {
+    --bg: #f5f3ef;
+    --card: #ffffff;
+    --ink: #2b2926;
+    --ink-soft: #6b6560;
+    --accent: #c25b3f;
+    --accent-dark: #a8492f;
+    --line: #e6e1da;
+    --danger: #d64545;
+    --ok: #3f8f5f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang TC", "Microsoft JhengHei", "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    padding: 24px 16px 60px;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  .sub { color: var(--ink-soft); font-size: 0.9rem; margin: 0 0 20px; line-height: 1.6; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 20px;
+    margin-bottom: 18px;
+  }
+  .card h2 { font-size: 1rem; margin: 0 0 12px; color: var(--ink); }
+  details.card summary { cursor: pointer; font-size: 1rem; font-weight: 600; list-style: none; }
+  details.card summary::-webkit-details-marker { display: none; }
+  details.card summary::before { content: "▸ "; color: var(--accent); }
+  details.card[open] summary::before { content: "▾ "; }
+  details.card .settings-body { margin-top: 14px; }
+  label { display: block; font-size: 0.85rem; color: var(--ink-soft); margin: 10px 0 4px; }
+  input[type="password"], input[type="text"], select, textarea {
+    width: 100%;
+    padding: 9px 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    font-size: 0.9rem;
+    background: #fbfaf8;
+    color: var(--ink);
+    font-family: inherit;
+  }
+  textarea { resize: vertical; min-height: 120px; line-height: 1.6; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+  button {
+    font-family: inherit;
+    font-size: 0.88rem;
+    border: none;
+    border-radius: 8px;
+    padding: 9px 16px;
+    cursor: pointer;
+    background: var(--ink);
+    color: #fff;
+    transition: opacity .15s;
+  }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.secondary { background: #efece6; color: var(--ink); }
+  button.small { padding: 6px 12px; font-size: 0.8rem; }
+
+  .rec-panel { text-align: center; padding: 30px 20px; }
+  .rec-btn {
+    width: 84px; height: 84px;
+    border-radius: 50%;
+    background: var(--danger);
+    border: none;
+    color: #fff;
+    font-size: 1.6rem;
+    cursor: pointer;
+    box-shadow: 0 0 0 0 rgba(214,69,69,0.5);
+  }
+  .rec-btn.recording { animation: pulse 1.4s infinite; background: var(--danger); }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(214,69,69,0.45); }
+    70% { box-shadow: 0 0 0 18px rgba(214,69,69,0); }
+    100% { box-shadow: 0 0 0 0 rgba(214,69,69,0); }
+  }
+  .status { margin-top: 14px; font-size: 0.95rem; color: var(--ink-soft); }
+  .timer { font-variant-numeric: tabular-nums; font-size: 1.1rem; font-weight: 600; color: var(--ink); }
+
+  .live-transcript {
+    margin-top: 16px;
+    text-align: left;
+    background: #faf7f2;
+    border: 1px dashed var(--line);
+    border-radius: 8px;
+    padding: 12px;
+    min-height: 60px;
+    font-size: 0.9rem;
+    line-height: 1.7;
+    white-space: pre-wrap;
+  }
+  .live-transcript .interim { color: var(--ink-soft); }
+
+  .banner {
+    font-size: 0.85rem;
+    padding: 10px 12px;
+    border-radius: 8px;
+    margin-bottom: 14px;
+    line-height: 1.6;
+  }
+  .banner.info { background: #eef3f0; color: #2f5c45; }
+  .banner.warn { background: #fbeee9; color: #8a3b21; }
+
+  .result-block { display: none; }
+  .result-block.show { display: block; }
+
+  .summary-box {
+    white-space: pre-wrap;
+    line-height: 1.7;
+    font-size: 0.92rem;
+    background: #faf7f2;
+    border-radius: 8px;
+    padding: 14px;
+    border: 1px solid var(--line);
+    min-height: 40px;
+  }
+  .hint { font-size: 0.78rem; color: var(--ink-soft); margin-top: 6px; }
+  .spinner {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid rgba(0,0,0,0.15);
+    border-top-color: var(--ink);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+    margin-right: 6px;
+    vertical-align: -2px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  footer { text-align: center; font-size: 0.75rem; color: var(--ink-soft); margin-top: 20px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>語音錄音摘要工具</h1>
+  <p class="sub">按下錄音鍵，說完後按停止，網頁會顯示逐字稿、AI 摘要，並提供錄音檔下載。</p>
+
+  <div class="banner info">
+    🔒 本工具不會將你的錄音、逐字稿或摘要儲存到任何伺服器。錄音只存在你瀏覽器的記憶體中，離開或關閉分頁就會消失；語音辨識由瀏覽器內建功能提供；產生摘要時，逐字稿文字會直接從你的瀏覽器送到 Google Gemini API（需要你自行輸入的 API Key，Key 只存在你自己的瀏覽器 localStorage，不會上傳到任何其他地方）。
+  </div>
+
+  <div id="compatWarning" class="banner warn" style="display:none;">
+    ⚠️ 你的瀏覽器不支援即時語音辨識（建議使用電腦版 Chrome 或 Edge）。你仍然可以錄音並下載檔案，但不會自動產生逐字稿。
+  </div>
+
+  <details class="card" id="settingsCard">
+    <summary>設定（Gemini API Key／語音辨識語言）</summary>
+    <div class="settings-body">
+      <label for="apiKey">Gemini API Key</label>
+      <input type="password" id="apiKey" placeholder="貼上你的 Gemini API Key">
+      <label for="modelName">Gemini 模型名稱（優先使用，失敗會自動換下一個備援模型）</label>
+      <input type="text" id="modelName" value="gemini-3.1-flash-lite">
+      <p class="hint">備援順序：輸入的模型 → gemini-2.5-flash → gemini-2.0-flash → gemini-2.5-pro。任一模型失敗（額度用完、暫時不可用等）會自動改用下一個。</p>
+      <label for="langSelect">語音辨識語言</label>
+      <select id="langSelect">
+        <option value="zh-TW" selected>中文（繁體）</option>
+        <option value="zh-CN">中文（簡體）</option>
+        <option value="en-US">English (US)</option>
+        <option value="ja-JP">日本語</option>
+      </select>
+      <div class="row">
+        <button id="saveSettings" class="small">儲存設定</button>
+        <button id="clearSettings" class="small secondary">清除已儲存的 Key</button>
+      </div>
+      <p class="hint">設定只會存在你目前使用的瀏覽器（localStorage），換裝置或清除瀏覽器資料需要重新輸入。若這個網頁之後給其他人使用，每個人都需要輸入自己的 API Key。</p>
+    </div>
+  </details>
+
+  <div class="card rec-panel">
+    <button id="recBtn" class="rec-btn" title="開始錄音">●</button>
+    <div class="status">
+      <span id="statusText">尚未開始錄音</span>
+      <span id="timer" class="timer" style="display:none;">00:00</span>
+    </div>
+    <div id="liveTranscript" class="live-transcript" style="display:none;"></div>
+  </div>
+
+  <div id="resultBlock" class="result-block">
+    <div class="card">
+      <h2>逐字稿</h2>
+      <textarea id="transcriptText" placeholder="逐字稿會顯示在這裡，你也可以手動修改。"></textarea>
+      <div class="row">
+        <button id="summarizeBtn">產生摘要</button>
+      </div>
+      <div id="summaryWrap" style="margin-top:14px; display:none;">
+        <h2>AI 摘要</h2>
+        <div id="summaryBox" class="summary-box"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>錄音檔</h2>
+      <audio id="player" controls style="width:100%;"></audio>
+      <div class="row">
+        <button id="downloadBtn" class="secondary">下載錄音</button>
+      </div>
+    </div>
+  </div>
+
+  <footer>所有處理都在你的瀏覽器本機完成，不使用任何後端資料庫。</footer>
+</div>
+
+<script>
+(function () {
+  const recBtn = document.getElementById('recBtn');
+  const statusText = document.getElementById('statusText');
+  const timerEl = document.getElementById('timer');
+  const liveTranscriptEl = document.getElementById('liveTranscript');
+  const compatWarning = document.getElementById('compatWarning');
+  const resultBlock = document.getElementById('resultBlock');
+  const transcriptText = document.getElementById('transcriptText');
+  const summarizeBtn = document.getElementById('summarizeBtn');
+  const summaryWrap = document.getElementById('summaryWrap');
+  const summaryBox = document.getElementById('summaryBox');
+  const player = document.getElementById('player');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const apiKeyInput = document.getElementById('apiKey');
+  const modelNameInput = document.getElementById('modelName');
+  const langSelect = document.getElementById('langSelect');
+  const saveSettingsBtn = document.getElementById('saveSettings');
+  const clearSettingsBtn = document.getElementById('clearSettings');
+  const settingsCard = document.getElementById('settingsCard');
+
+  // ---- 載入已儲存設定 ----
+  const savedKey = localStorage.getItem('vr_gemini_key');
+  const savedModel = localStorage.getItem('vr_gemini_model');
+  const savedLang = localStorage.getItem('vr_lang');
+  if (savedKey) apiKeyInput.value = savedKey;
+  if (savedModel) modelNameInput.value = savedModel;
+  if (savedLang) langSelect.value = savedLang;
+  if (!savedKey) settingsCard.setAttribute('open', '');
+
+  saveSettingsBtn.addEventListener('click', () => {
+    localStorage.setItem('vr_gemini_key', apiKeyInput.value.trim());
+    localStorage.setItem('vr_gemini_model', modelNameInput.value.trim() || 'gemini-3.1-flash-lite');
+    localStorage.setItem('vr_lang', langSelect.value);
+    saveSettingsBtn.textContent = '已儲存 ✓';
+    setTimeout(() => (saveSettingsBtn.textContent = '儲存設定'), 1500);
+  });
+  clearSettingsBtn.addEventListener('click', () => {
+    localStorage.removeItem('vr_gemini_key');
+    localStorage.removeItem('vr_gemini_model');
+    localStorage.removeItem('vr_lang');
+    apiKeyInput.value = '';
+    modelNameInput.value = 'gemini-3.1-flash-lite';
+    clearSettingsBtn.textContent = '已清除 ✓';
+    setTimeout(() => (clearSettingsBtn.textContent = '清除已儲存的 Key'), 1500);
+  });
+
+  // ---- 狀態 ----
+  let mediaRecorder = null;
+  let audioChunks = [];
+  let audioStream = null;
+  let recognizer = null;
+  let recognizing = false;
+  let shouldKeepListening = false;
+  let finalTranscript = '';
+  let recordedBlob = null;
+  let recordedMimeType = 'audio/webm';
+  let timerInterval = null;
+  let startTime = 0;
+
+  const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const speechSupported = !!SpeechRecognitionCtor;
+  if (!speechSupported) {
+    compatWarning.style.display = 'block';
+  }
+
+  function pickMimeType() {
+    const candidates = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/ogg;codecs=opus',
+      'audio/ogg',
+      'audio/mp4'
+    ];
+    for (const c of candidates) {
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(c)) {
+        return c;
+      }
+    }
+    return '';
+  }
+
+  function formatTime(ms) {
+    const totalSec = Math.floor(ms / 1000);
+    const m = String(Math.floor(totalSec / 60)).padStart(2, '0');
+    const s = String(totalSec % 60).padStart(2, '0');
+    return m + ':' + s;
+  }
+
+  function startTimer() {
+    startTime = Date.now();
+    timerEl.style.display = 'inline';
+    timerInterval = setInterval(() => {
+      timerEl.textContent = formatTime(Date.now() - startTime);
+    }, 500);
+  }
+  function stopTimer() {
+    clearInterval(timerInterval);
+  }
+
+  function buildRecognizer() {
+    const r = new SpeechRecognitionCtor();
+    r.continuous = true;
+    r.interimResults = true;
+    r.lang = langSelect.value || 'zh-TW';
+    r.onresult = (event) => {
+      let interim = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcriptPiece = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += transcriptPiece;
+        } else {
+          interim += transcriptPiece;
+        }
+      }
+      renderLiveTranscript(interim);
+    };
+    r.onerror = (e) => {
+      console.warn('speech recognition error', e.error);
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        statusText.textContent = '無法使用語音辨識（麥克風權限被拒絕）';
+      }
+    };
+    r.onend = () => {
+      recognizing = false;
+      if (shouldKeepListening) {
+        // 瀏覽器有時會在靜音一段時間後自動結束辨識，這裡自動重啟以維持連續錄音
+        try {
+          r.start();
+          recognizing = true;
+        } catch (err) {
+          console.warn('restart recognition failed', err);
+        }
+      }
+    };
+    return r;
+  }
+
+  function renderLiveTranscript(interim) {
+    liveTranscriptEl.innerHTML =
+      escapeHtml(finalTranscript) +
+      (interim ? '<span class="interim">' + escapeHtml(interim) + '</span>' : '');
+    liveTranscriptEl.scrollTop = liveTranscriptEl.scrollHeight;
+  }
+
+  function escapeHtml(str) {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  async function startRecording() {
+    try {
+      audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      statusText.textContent = '無法取得麥克風權限：' + err.message;
+      return;
+    }
+
+    audioChunks = [];
+    finalTranscript = '';
+    liveTranscriptEl.textContent = '';
+    liveTranscriptEl.style.display = 'block';
+    resultBlock.classList.remove('show');
+    summaryWrap.style.display = 'none';
+    summaryBox.textContent = '';
+
+    recordedMimeType = pickMimeType();
+    mediaRecorder = recordedMimeType
+      ? new MediaRecorder(audioStream, { mimeType: recordedMimeType })
+      : new MediaRecorder(audioStream);
+
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) audioChunks.push(e.data);
+    };
+    mediaRecorder.onstop = () => {
+      recordedBlob = new Blob(audioChunks, { type: recordedMimeType || 'audio/webm' });
+      const url = URL.createObjectURL(recordedBlob);
+      player.src = url;
+      resultBlock.classList.add('show');
+      transcriptText.value = finalTranscript.trim();
+    };
+    mediaRecorder.start();
+
+    if (speechSupported) {
+      recognizer = buildRecognizer();
+      shouldKeepListening = true;
+      try {
+        recognizer.start();
+        recognizing = true;
+      } catch (err) {
+        console.warn('recognition start failed', err);
+      }
+    }
+
+    startTimer();
+    statusText.textContent = '錄音中…';
+    recBtn.classList.add('recording');
+    recBtn.textContent = '■';
+    recBtn.title = '停止錄音';
+  }
+
+  function stopRecording() {
+    shouldKeepListening = false;
+    if (recognizer && recognizing) {
+      try { recognizer.stop(); } catch (err) {}
+    }
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      mediaRecorder.stop();
+    }
+    if (audioStream) {
+      audioStream.getTracks().forEach((t) => t.stop());
+    }
+    stopTimer();
+    statusText.textContent = '錄音已結束';
+    recBtn.classList.remove('recording');
+    recBtn.textContent = '●';
+    recBtn.title = '開始錄音';
+  }
+
+  recBtn.addEventListener('click', () => {
+    if (recBtn.classList.contains('recording')) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  });
+
+  downloadBtn.addEventListener('click', () => {
+    if (!recordedBlob) return;
+    const ext = (recordedMimeType.split('/')[1] || 'webm').split(';')[0];
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(recordedBlob);
+    a.download = `recording-${ts}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
+
+  const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-pro'];
+
+  async function callGemini(model, apiKey, prompt) {
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }]
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      const msg = (data && data.error && data.error.message) || `HTTP ${res.status}`;
+      throw new Error(msg);
+    }
+    const candidate = data.candidates && data.candidates[0];
+    const text = candidate && candidate.content && candidate.content.parts
+      ? candidate.content.parts.map((p) => p.text || '').join('')
+      : '';
+    if (!text) throw new Error('模型沒有回傳內容');
+    return text;
+  }
+
+  summarizeBtn.addEventListener('click', async () => {
+    const apiKey = (apiKeyInput.value || '').trim();
+    const primaryModel = (modelNameInput.value || 'gemini-3.1-flash-lite').trim();
+    const transcript = transcriptText.value.trim();
+
+    if (!apiKey) {
+      alert('請先在上方「設定」區輸入你的 Gemini API Key。');
+      settingsCard.setAttribute('open', '');
+      return;
+    }
+    if (!transcript) {
+      alert('逐字稿是空的，無法產生摘要。');
+      return;
+    }
+
+    summarizeBtn.disabled = true;
+    summaryWrap.style.display = 'block';
+    summaryBox.innerHTML = '<span class="spinner"></span>產生摘要中…';
+
+    const prompt =
+      '請將以下語音逐字稿整理成清楚的重點摘要，使用繁體中文回覆，包含：1) 重點摘要（條列式）2) 提到的待辦事項或後續行動（如果有的話，沒有就寫「無」）。逐字稿內容可能包含辨識錯誤或口語贅字，請自行判斷語意：\n\n' +
+      transcript;
+
+    // 候選模型：使用者指定的模型優先，接著依序用備援模型，並去除重複
+    const candidates = [primaryModel, ...FALLBACK_MODELS].filter(
+      (m, i, arr) => m && arr.indexOf(m) === i
+    );
+
+    const errors = [];
+    for (let i = 0; i < candidates.length; i++) {
+      const model = candidates[i];
+      if (i > 0) {
+        summaryBox.innerHTML = `<span class="spinner"></span>${escapeHtml(candidates[i - 1])} 失敗，改用 ${escapeHtml(model)} 重試中…`;
+      }
+      try {
+        const text = await callGemini(model, apiKey, prompt);
+        const note = i > 0 ? `（備援模型 ${model} 產生，原模型 ${primaryModel} 失敗）\n\n` : '';
+        summaryBox.textContent = note + text;
+        summarizeBtn.disabled = false;
+        return;
+      } catch (err) {
+        errors.push(`${model}: ${err.message}`);
+      }
+    }
+
+    summaryBox.textContent = '摘要失敗，所有模型都嘗試失敗：\n' + errors.join('\n') + '\n請確認 API Key 是否正確，或稍後再試。';
+    summarizeBtn.disabled = false;
+  });
+})();
+</script>
+</body>
+</html>
