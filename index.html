@@ -101,6 +101,7 @@
     white-space: pre-wrap;
   }
   .live-transcript .interim { color: var(--ink-soft); }
+  .live-transcript-label { font-size: 0.75rem; color: var(--ink-soft); margin-top: 8px; }
 
   .banner {
     font-size: 0.85rem;
@@ -146,11 +147,11 @@
   <p class="sub">按下錄音鍵，說完後按停止，網頁會顯示逐字稿、AI 摘要，並提供錄音檔下載。</p>
 
   <div class="banner info">
-    🔒 本工具不會將你的錄音、逐字稿或摘要儲存到任何伺服器。錄音只存在你瀏覽器的記憶體中，離開或關閉分頁就會消失；語音辨識由瀏覽器內建功能提供；產生摘要時，逐字稿文字會直接從你的瀏覽器送到 Google Gemini API（需要你自行輸入的 API Key，Key 只存在你自己的瀏覽器 localStorage，不會上傳到任何其他地方）。
+    🔒 本工具不會將你的錄音、逐字稿或摘要儲存到任何伺服器。錄音只存在你瀏覽器的記憶體中，離開或關閉分頁就會消失；產生逐字稿與摘要時，錄音或文字會直接從你的瀏覽器送到 Google Gemini API（需要你自行輸入的 API Key，Key 只存在你自己的瀏覽器 localStorage，不會上傳到任何其他地方）。
   </div>
 
   <div id="compatWarning" class="banner warn" style="display:none;">
-    ⚠️ 你的瀏覽器不支援即時語音辨識（建議使用電腦版 Chrome 或 Edge）。你仍然可以錄音並下載檔案，但不會自動產生逐字稿。
+    ⚠️ 你的瀏覽器不支援錄音功能所需的部分技術（建議使用電腦版 Chrome 或 Edge）。
   </div>
 
   <details class="card" id="settingsCard">
@@ -161,7 +162,7 @@
       <label for="modelName">Gemini 模型名稱（優先使用，失敗會自動換下一個備援模型）</label>
       <input type="text" id="modelName" value="gemini-3.1-flash-lite">
       <p class="hint">備援順序：輸入的模型 → gemini-2.5-flash → gemini-2.0-flash → gemini-2.5-pro。任一模型失敗（額度用完、暫時不可用等）會自動改用下一個。</p>
-      <label for="langSelect">語音辨識語言</label>
+      <label for="langSelect">即時預覽語言（僅供錄音時參考用）</label>
       <select id="langSelect">
         <option value="zh-TW" selected>中文（繁體）</option>
         <option value="zh-CN">中文（簡體）</option>
@@ -183,15 +184,19 @@
       <span id="timer" class="timer" style="display:none;">00:00</span>
     </div>
     <div id="liveTranscript" class="live-transcript" style="display:none;"></div>
+    <div id="liveTranscriptLabel" class="live-transcript-label" style="display:none;">↑ 即時預覽，僅供錄音時參考，可能有誤或不完整，沒有標點。停止錄音後請用下方「AI 產生逐字稿」取得完整版本。</div>
   </div>
 
   <div id="resultBlock" class="result-block">
     <div class="card">
       <h2>逐字稿</h2>
       <textarea id="transcriptText" placeholder="逐字稿會顯示在這裡，你也可以手動修改。"></textarea>
-      <p class="hint">瀏覽器內建語音辨識不會自動加標點，長時間錄音也可能中途斷線重連。如果逐字稿讀起來卡卡的，可以先按「整理逐字稿」用 AI 補標點、接順句子（不會更改原意）。</p>
+      <p class="hint" id="sizeHint"></p>
       <div class="row">
-        <button id="polishBtn" class="secondary">整理逐字稿（加標點）</button>
+        <button id="transcribeBtn">AI 產生逐字稿（直接轉錄錄音，含標點）</button>
+        <button id="polishBtn" class="secondary">整理目前文字（加標點）</button>
+      </div>
+      <div class="row">
         <button id="summarizeBtn">產生摘要</button>
       </div>
       <div id="summaryWrap" style="margin-top:14px; display:none;">
@@ -204,7 +209,7 @@
       <h2>錄音檔</h2>
       <audio id="player" controls style="width:100%;"></audio>
       <div class="row">
-        <button id="downloadBtn" class="secondary">下載錄音</button>
+        <button id="downloadBtn" class="secondary">下載錄音（WAV）</button>
       </div>
     </div>
   </div>
@@ -218,9 +223,12 @@
   const statusText = document.getElementById('statusText');
   const timerEl = document.getElementById('timer');
   const liveTranscriptEl = document.getElementById('liveTranscript');
+  const liveTranscriptLabel = document.getElementById('liveTranscriptLabel');
   const compatWarning = document.getElementById('compatWarning');
   const resultBlock = document.getElementById('resultBlock');
   const transcriptText = document.getElementById('transcriptText');
+  const sizeHint = document.getElementById('sizeHint');
+  const transcribeBtn = document.getElementById('transcribeBtn');
   const polishBtn = document.getElementById('polishBtn');
   const summarizeBtn = document.getElementById('summarizeBtn');
   const summaryWrap = document.getElementById('summaryWrap');
@@ -260,39 +268,31 @@
     setTimeout(() => (clearSettingsBtn.textContent = '清除已儲存的 Key'), 1500);
   });
 
-  // ---- 狀態 ----
-  let mediaRecorder = null;
-  let audioChunks = [];
+  // ---- 錄音狀態（Web Audio API 直接錄成 WAV，避免瀏覽器語音辨識的斷線與無標點問題）----
+  let audioCtx = null;
+  let sourceNode = null;
+  let processorNode = null;
   let audioStream = null;
+  let pcmChunks = [];
+  let recordingSampleRate = 44100;
+  let recordedBlob = null;
+  let timerInterval = null;
+  let startTime = 0;
+
+  // ---- 即時預覽用的語音辨識（僅供參考，不是最終逐字稿）----
   let recognizer = null;
   let recognizing = false;
   let shouldKeepListening = false;
   let finalTranscript = '';
-  let recordedBlob = null;
-  let recordedMimeType = 'audio/webm';
-  let timerInterval = null;
-  let startTime = 0;
 
   const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
   const speechSupported = !!SpeechRecognitionCtor;
-  if (!speechSupported) {
-    compatWarning.style.display = 'block';
-  }
 
-  function pickMimeType() {
-    const candidates = [
-      'audio/webm;codecs=opus',
-      'audio/webm',
-      'audio/ogg;codecs=opus',
-      'audio/ogg',
-      'audio/mp4'
-    ];
-    for (const c of candidates) {
-      if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(c)) {
-        return c;
-      }
-    }
-    return '';
+  const AudioCtxCtor = window.AudioContext || window.webkitAudioContext;
+  const recordingSupported = !!(AudioCtxCtor && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  if (!recordingSupported) {
+    compatWarning.style.display = 'block';
+    recBtn.disabled = true;
   }
 
   function formatTime(ms) {
@@ -313,6 +313,7 @@
     clearInterval(timerInterval);
   }
 
+  // ---- 語音辨識即時預覽（可能因瀏覽器限制而斷線或缺標點，僅供錄音時參考）----
   function buildRecognizer() {
     const r = new SpeechRecognitionCtor();
     r.continuous = true;
@@ -321,11 +322,11 @@
     r.onresult = (event) => {
       let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcriptPiece = event.results[i][0].transcript;
+        const piece = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          finalTranscript += transcriptPiece;
+          finalTranscript += piece;
         } else {
-          interim += transcriptPiece;
+          interim += piece;
         }
       }
       renderLiveTranscript(interim);
@@ -334,15 +335,11 @@
       console.warn('speech recognition error', e.error);
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
         shouldKeepListening = false;
-        statusText.textContent = '無法使用語音辨識（麥克風權限被拒絕），但錄音仍會繼續';
       }
-      // 其他錯誤（no-speech、network、audio-capture 等）交給 onend 統一處理重啟
     };
     r.onend = () => {
       recognizing = false;
-      if (shouldKeepListening) {
-        attemptRestart(r, 0);
-      }
+      if (shouldKeepListening) attemptRestart(r, 0);
     };
     return r;
   }
@@ -353,12 +350,10 @@
       r.start();
       recognizing = true;
     } catch (err) {
-      // Chrome 偶爾會在前一個 session 還沒完全關閉時丟出 InvalidStateError，稍等再試
       if (retryCount < 8) {
         setTimeout(() => attemptRestart(r, retryCount + 1), 300);
       } else {
         console.warn('speech recognition 重啟多次失敗', err);
-        statusText.textContent = '語音辨識連線中斷，逐字稿可能不完整（錄音仍持續進行，可停止後用「整理逐字稿」補救）';
       }
     }
   }
@@ -377,6 +372,66 @@
       .replace(/>/g, '&gt;');
   }
 
+  // ---- WAV 編碼 ----
+  function downsampleBuffer(buffer, inputSampleRate, outputSampleRate) {
+    if (outputSampleRate >= inputSampleRate) return buffer;
+    const ratio = inputSampleRate / outputSampleRate;
+    const newLength = Math.round(buffer.length / ratio);
+    const result = new Float32Array(newLength);
+    let offsetResult = 0;
+    let offsetBuffer = 0;
+    while (offsetResult < result.length) {
+      const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
+      let accum = 0;
+      let count = 0;
+      for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+        accum += buffer[i];
+        count++;
+      }
+      result[offsetResult] = count ? accum / count : 0;
+      offsetResult++;
+      offsetBuffer = nextOffsetBuffer;
+    }
+    return result;
+  }
+
+  function encodeWAV(samples, sampleRate) {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    function writeString(offset, str) {
+      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+    }
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + samples.length * 2, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, 'data');
+    view.setUint32(40, samples.length * 2, true);
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++, offset += 2) {
+      const s = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    return new Blob([view], { type: 'audio/wav' });
+  }
+
+  function mergeBuffers(chunks, totalLength) {
+    const result = new Float32Array(totalLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+      result.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return result;
+  }
+
   async function startRecording() {
     try {
       audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -385,30 +440,30 @@
       return;
     }
 
-    audioChunks = [];
+    pcmChunks = [];
     finalTranscript = '';
     liveTranscriptEl.textContent = '';
     liveTranscriptEl.style.display = 'block';
+    liveTranscriptLabel.style.display = 'block';
     resultBlock.classList.remove('show');
     summaryWrap.style.display = 'none';
     summaryBox.textContent = '';
+    sizeHint.textContent = '';
 
-    recordedMimeType = pickMimeType();
-    mediaRecorder = recordedMimeType
-      ? new MediaRecorder(audioStream, { mimeType: recordedMimeType })
-      : new MediaRecorder(audioStream);
-
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) audioChunks.push(e.data);
+    audioCtx = new AudioCtxCtor();
+    recordingSampleRate = audioCtx.sampleRate;
+    sourceNode = audioCtx.createMediaStreamSource(audioStream);
+    processorNode = audioCtx.createScriptProcessor(4096, 1, 1);
+    processorNode.onaudioprocess = (e) => {
+      const channelData = e.inputBuffer.getChannelData(0);
+      pcmChunks.push(new Float32Array(channelData));
     };
-    mediaRecorder.onstop = () => {
-      recordedBlob = new Blob(audioChunks, { type: recordedMimeType || 'audio/webm' });
-      const url = URL.createObjectURL(recordedBlob);
-      player.src = url;
-      resultBlock.classList.add('show');
-      transcriptText.value = finalTranscript.trim();
-    };
-    mediaRecorder.start();
+    sourceNode.connect(processorNode);
+    try {
+      processorNode.connect(audioCtx.destination);
+    } catch (e) {
+      // 已連接則忽略
+    }
 
     if (speechSupported) {
       recognizer = buildRecognizer();
@@ -419,6 +474,8 @@
       } catch (err) {
         console.warn('recognition start failed', err);
       }
+    } else {
+      liveTranscriptLabel.textContent = '此瀏覽器不支援即時語音預覽，但錄音與「AI 產生逐字稿」功能不受影響。';
     }
 
     startTimer();
@@ -433,12 +490,40 @@
     if (recognizer && recognizing) {
       try { recognizer.stop(); } catch (err) {}
     }
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      mediaRecorder.stop();
+
+    if (processorNode) {
+      processorNode.disconnect();
+      processorNode.onaudioprocess = null;
+    }
+    if (sourceNode) sourceNode.disconnect();
+
+    const totalLength = pcmChunks.reduce((sum, c) => sum + c.length, 0);
+    const merged = mergeBuffers(pcmChunks, totalLength);
+    const targetRate = 16000;
+    const downsampled = downsampleBuffer(merged, recordingSampleRate, targetRate);
+    recordedBlob = encodeWAV(downsampled, Math.min(targetRate, recordingSampleRate));
+
+    const url = URL.createObjectURL(recordedBlob);
+    player.src = url;
+    resultBlock.classList.add('show');
+    transcriptText.value = finalTranscript.trim();
+
+    const mb = recordedBlob.size / (1024 * 1024);
+    if (mb > 14) {
+      sizeHint.textContent = `錄音檔約 ${mb.toFixed(1)} MB，可能超過單次 AI 轉錄的大小上限（約 14-15MB，相當於 7-8 分鐘），若「AI 產生逐字稿」失敗，請改用「整理目前文字」處理即時預覽內容，或分段錄製。`;
+    } else {
+      sizeHint.textContent = '';
+    }
+
+    if (audioCtx) {
+      audioCtx.close().catch(() => {});
+      audioCtx = null;
     }
     if (audioStream) {
       audioStream.getTracks().forEach((t) => t.stop());
+      audioStream = null;
     }
+
     stopTimer();
     statusText.textContent = '錄音已結束';
     recBtn.classList.remove('recording');
@@ -456,26 +541,24 @@
 
   downloadBtn.addEventListener('click', () => {
     if (!recordedBlob) return;
-    const ext = (recordedMimeType.split('/')[1] || 'webm').split(';')[0];
     const ts = new Date().toISOString().replace(/[:.]/g, '-');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(recordedBlob);
-    a.download = `recording-${ts}.${ext}`;
+    a.download = `recording-${ts}.wav`;
     document.body.appendChild(a);
     a.click();
     a.remove();
   });
 
+  // ---- Gemini API ----
   const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-pro'];
 
-  async function callGemini(model, apiKey, prompt) {
+  async function callGeminiParts(model, apiKey, parts) {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }]
-      })
+      body: JSON.stringify({ contents: [{ parts }] })
     });
     const data = await res.json();
     if (!res.ok) {
@@ -490,6 +573,86 @@
     return text;
   }
 
+  function callGemini(model, apiKey, promptText) {
+    return callGeminiParts(model, apiKey, [{ text: promptText }]);
+  }
+
+  function arrayBufferToBase64(buffer) {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+    }
+    return btoa(binary);
+  }
+
+  async function runWithFallback(primaryModel, apiKey, buildParts, onProgress) {
+    const candidates = [primaryModel, ...FALLBACK_MODELS].filter(
+      (m, i, arr) => m && arr.indexOf(m) === i
+    );
+    const errors = [];
+    for (let i = 0; i < candidates.length; i++) {
+      const model = candidates[i];
+      if (i > 0 && onProgress) onProgress(candidates[i - 1], model);
+      try {
+        const text = await callGeminiParts(model, apiKey, buildParts());
+        return { text, model, usedFallback: i > 0, failedModel: i > 0 ? candidates[i - 1] : null };
+      } catch (err) {
+        errors.push(`${model}: ${err.message}`);
+      }
+    }
+    throw new Error(errors.join('\n'));
+  }
+
+  transcribeBtn.addEventListener('click', async () => {
+    const apiKey = (apiKeyInput.value || '').trim();
+    const primaryModel = (modelNameInput.value || 'gemini-3.1-flash-lite').trim();
+
+    if (!apiKey) {
+      alert('請先在上方「設定」區輸入你的 Gemini API Key。');
+      settingsCard.setAttribute('open', '');
+      return;
+    }
+    if (!recordedBlob) {
+      alert('目前沒有錄音內容。');
+      return;
+    }
+
+    transcribeBtn.disabled = true;
+    const originalLabel = transcribeBtn.textContent;
+    transcribeBtn.textContent = '轉錄中…（音檔越長需要越久）';
+
+    try {
+      const arrayBuffer = await recordedBlob.arrayBuffer();
+      const base64Audio = arrayBufferToBase64(arrayBuffer);
+      const prompt =
+        '請將附加的音訊完整轉錄成繁體中文逐字稿，需要包含正確的標點符號（逗號、句號、問號等）並適當分段，盡量逐字還原講話內容，不要省略或摘要，也不要加上任何說明文字，直接輸出逐字稿本身。';
+
+      const result = await runWithFallback(
+        primaryModel,
+        apiKey,
+        () => [
+          { text: prompt },
+          { inline_data: { mime_type: 'audio/wav', data: base64Audio } }
+        ],
+        (failed, next) => {
+          transcribeBtn.textContent = `${failed} 失敗，改用 ${next} 重試中…`;
+        }
+      );
+
+      transcriptText.value = result.text.trim();
+      if (result.usedFallback) {
+        sizeHint.textContent = `（由備援模型 ${result.model} 產生，原模型 ${result.failedModel} 失敗）`;
+      }
+    } catch (err) {
+      alert('AI 產生逐字稿失敗：\n' + err.message + '\n\n可以改用「整理目前文字」處理即時預覽內容，或稍後再試。');
+    } finally {
+      transcribeBtn.disabled = false;
+      transcribeBtn.textContent = originalLabel;
+    }
+  });
+
   polishBtn.addEventListener('click', async () => {
     const apiKey = (apiKeyInput.value || '').trim();
     const primaryModel = (modelNameInput.value || 'gemini-3.1-flash-lite').trim();
@@ -501,37 +664,28 @@
       return;
     }
     if (!raw) {
-      alert('逐字稿是空的，沒有東西可以整理。');
+      alert('目前文字是空的，沒有東西可以整理。');
       return;
     }
 
     const prompt =
-      '以下是瀏覽器語音辨識產生的逐字稿，沒有標點符號，可能有辨識錯字，長錄音中間也可能因為斷線重連而有點跳接。請你：' +
-      '1) 補上合理的標點符號（逗號、句號、問號等）2) 適當分段 3) 修正明顯的辨識錯字（例如同音字錯誤）4) 絕對不要增加、刪減或改寫原本沒有表達的內容，只做標點與明顯錯字的修正，語氣與用詞盡量保留原樣。' +
-      '直接輸出整理後的逐字稿全文，不要加任何說明或前後綴：\n\n' + raw;
+      '以下文字可能沒有標點符號，可能有辨識錯字或跳接。請你：' +
+      '1) 補上合理的標點符號 2) 適當分段 3) 修正明顯的辨識錯字（例如同音字錯誤）4) 絕對不要增加、刪減或改寫原本沒有表達的內容，只做標點與明顯錯字的修正，語氣與用詞盡量保留原樣。' +
+      '直接輸出整理後的文字全文，不要加任何說明或前後綴：\n\n' + raw;
 
     polishBtn.disabled = true;
     const originalLabel = polishBtn.textContent;
     polishBtn.textContent = '整理中…';
 
-    const candidates = [primaryModel, ...FALLBACK_MODELS].filter(
-      (m, i, arr) => m && arr.indexOf(m) === i
-    );
-    const errors = [];
-    for (const model of candidates) {
-      try {
-        const text = await callGemini(model, apiKey, prompt);
-        transcriptText.value = text.trim();
-        polishBtn.disabled = false;
-        polishBtn.textContent = originalLabel;
-        return;
-      } catch (err) {
-        errors.push(`${model}: ${err.message}`);
-      }
+    try {
+      const result = await runWithFallback(primaryModel, apiKey, () => [{ text: prompt }]);
+      transcriptText.value = result.text.trim();
+    } catch (err) {
+      alert('整理文字失敗：\n' + err.message);
+    } finally {
+      polishBtn.disabled = false;
+      polishBtn.textContent = originalLabel;
     }
-    alert('整理逐字稿失敗：\n' + errors.join('\n'));
-    polishBtn.disabled = false;
-    polishBtn.textContent = originalLabel;
   });
 
   summarizeBtn.addEventListener('click', async () => {
@@ -557,30 +711,22 @@
       '請將以下語音逐字稿整理成清楚的重點摘要，使用繁體中文回覆，包含：1) 重點摘要（條列式）2) 提到的待辦事項或後續行動（如果有的話，沒有就寫「無」）。逐字稿內容可能包含辨識錯誤或口語贅字，請自行判斷語意：\n\n' +
       transcript;
 
-    // 候選模型：使用者指定的模型優先，接著依序用備援模型，並去除重複
-    const candidates = [primaryModel, ...FALLBACK_MODELS].filter(
-      (m, i, arr) => m && arr.indexOf(m) === i
-    );
-
-    const errors = [];
-    for (let i = 0; i < candidates.length; i++) {
-      const model = candidates[i];
-      if (i > 0) {
-        summaryBox.innerHTML = `<span class="spinner"></span>${escapeHtml(candidates[i - 1])} 失敗，改用 ${escapeHtml(model)} 重試中…`;
-      }
-      try {
-        const text = await callGemini(model, apiKey, prompt);
-        const note = i > 0 ? `（備援模型 ${model} 產生，原模型 ${primaryModel} 失敗）\n\n` : '';
-        summaryBox.textContent = note + text;
-        summarizeBtn.disabled = false;
-        return;
-      } catch (err) {
-        errors.push(`${model}: ${err.message}`);
-      }
+    try {
+      const result = await runWithFallback(
+        primaryModel,
+        apiKey,
+        () => [{ text: prompt }],
+        (failed, next) => {
+          summaryBox.innerHTML = `<span class="spinner"></span>${escapeHtml(failed)} 失敗，改用 ${escapeHtml(next)} 重試中…`;
+        }
+      );
+      const note = result.usedFallback ? `（備援模型 ${result.model} 產生，原模型 ${result.failedModel} 失敗）\n\n` : '';
+      summaryBox.textContent = note + result.text;
+    } catch (err) {
+      summaryBox.textContent = '摘要失敗，所有模型都嘗試失敗：\n' + err.message + '\n請確認 API Key 是否正確，或稍後再試。';
+    } finally {
+      summarizeBtn.disabled = false;
     }
-
-    summaryBox.textContent = '摘要失敗，所有模型都嘗試失敗：\n' + errors.join('\n') + '\n請確認 API Key 是否正確，或稍後再試。';
-    summarizeBtn.disabled = false;
   });
 })();
 </script>
