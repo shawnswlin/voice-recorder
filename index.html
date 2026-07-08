@@ -189,7 +189,9 @@
     <div class="card">
       <h2>逐字稿</h2>
       <textarea id="transcriptText" placeholder="逐字稿會顯示在這裡，你也可以手動修改。"></textarea>
+      <p class="hint">瀏覽器內建語音辨識不會自動加標點，長時間錄音也可能中途斷線重連。如果逐字稿讀起來卡卡的，可以先按「整理逐字稿」用 AI 補標點、接順句子（不會更改原意）。</p>
       <div class="row">
+        <button id="polishBtn" class="secondary">整理逐字稿（加標點）</button>
         <button id="summarizeBtn">產生摘要</button>
       </div>
       <div id="summaryWrap" style="margin-top:14px; display:none;">
@@ -219,6 +221,7 @@
   const compatWarning = document.getElementById('compatWarning');
   const resultBlock = document.getElementById('resultBlock');
   const transcriptText = document.getElementById('transcriptText');
+  const polishBtn = document.getElementById('polishBtn');
   const summarizeBtn = document.getElementById('summarizeBtn');
   const summaryWrap = document.getElementById('summaryWrap');
   const summaryBox = document.getElementById('summaryBox');
@@ -330,22 +333,34 @@
     r.onerror = (e) => {
       console.warn('speech recognition error', e.error);
       if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-        statusText.textContent = '無法使用語音辨識（麥克風權限被拒絕）';
+        shouldKeepListening = false;
+        statusText.textContent = '無法使用語音辨識（麥克風權限被拒絕），但錄音仍會繼續';
       }
+      // 其他錯誤（no-speech、network、audio-capture 等）交給 onend 統一處理重啟
     };
     r.onend = () => {
       recognizing = false;
       if (shouldKeepListening) {
-        // 瀏覽器有時會在靜音一段時間後自動結束辨識，這裡自動重啟以維持連續錄音
-        try {
-          r.start();
-          recognizing = true;
-        } catch (err) {
-          console.warn('restart recognition failed', err);
-        }
+        attemptRestart(r, 0);
       }
     };
     return r;
+  }
+
+  function attemptRestart(r, retryCount) {
+    if (!shouldKeepListening || recognizing) return;
+    try {
+      r.start();
+      recognizing = true;
+    } catch (err) {
+      // Chrome 偶爾會在前一個 session 還沒完全關閉時丟出 InvalidStateError，稍等再試
+      if (retryCount < 8) {
+        setTimeout(() => attemptRestart(r, retryCount + 1), 300);
+      } else {
+        console.warn('speech recognition 重啟多次失敗', err);
+        statusText.textContent = '語音辨識連線中斷，逐字稿可能不完整（錄音仍持續進行，可停止後用「整理逐字稿」補救）';
+      }
+    }
   }
 
   function renderLiveTranscript(interim) {
@@ -474,6 +489,50 @@
     if (!text) throw new Error('模型沒有回傳內容');
     return text;
   }
+
+  polishBtn.addEventListener('click', async () => {
+    const apiKey = (apiKeyInput.value || '').trim();
+    const primaryModel = (modelNameInput.value || 'gemini-3.1-flash-lite').trim();
+    const raw = transcriptText.value.trim();
+
+    if (!apiKey) {
+      alert('請先在上方「設定」區輸入你的 Gemini API Key。');
+      settingsCard.setAttribute('open', '');
+      return;
+    }
+    if (!raw) {
+      alert('逐字稿是空的，沒有東西可以整理。');
+      return;
+    }
+
+    const prompt =
+      '以下是瀏覽器語音辨識產生的逐字稿，沒有標點符號，可能有辨識錯字，長錄音中間也可能因為斷線重連而有點跳接。請你：' +
+      '1) 補上合理的標點符號（逗號、句號、問號等）2) 適當分段 3) 修正明顯的辨識錯字（例如同音字錯誤）4) 絕對不要增加、刪減或改寫原本沒有表達的內容，只做標點與明顯錯字的修正，語氣與用詞盡量保留原樣。' +
+      '直接輸出整理後的逐字稿全文，不要加任何說明或前後綴：\n\n' + raw;
+
+    polishBtn.disabled = true;
+    const originalLabel = polishBtn.textContent;
+    polishBtn.textContent = '整理中…';
+
+    const candidates = [primaryModel, ...FALLBACK_MODELS].filter(
+      (m, i, arr) => m && arr.indexOf(m) === i
+    );
+    const errors = [];
+    for (const model of candidates) {
+      try {
+        const text = await callGemini(model, apiKey, prompt);
+        transcriptText.value = text.trim();
+        polishBtn.disabled = false;
+        polishBtn.textContent = originalLabel;
+        return;
+      } catch (err) {
+        errors.push(`${model}: ${err.message}`);
+      }
+    }
+    alert('整理逐字稿失敗：\n' + errors.join('\n'));
+    polishBtn.disabled = false;
+    polishBtn.textContent = originalLabel;
+  });
 
   summarizeBtn.addEventListener('click', async () => {
     const apiKey = (apiKeyInput.value || '').trim();
